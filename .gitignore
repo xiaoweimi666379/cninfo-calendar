@@ -1,0 +1,17 @@
+# 临时文件
+work/
+*.pyc
+__pycache__/
+*.log
+
+# 数据(用 artifact 传,不入 git)
+data/
+dist/
+*.db
+*.db-journal
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+.DS_Store

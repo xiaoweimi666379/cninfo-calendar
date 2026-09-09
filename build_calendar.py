@@ -299,7 +299,9 @@ print(f"csv b64:  {len(csv_b64)} chars")
 
 # === 动态变量(标题/文件名/页面元数据) ===
 from datetime import date as _date
+from datetime import datetime as _dt
 today = _date.today().isoformat()
+updated_at = _dt.now().strftime("%Y-%m-%d %H:%M")
 
 # 公告日期范围(从 announcement.publish_date)
 ann_dates = sorted(r["publish_date"] for r in rows if r.get("publish_date"))
@@ -321,7 +323,7 @@ html = f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>股东大会日历 · 巨潮资讯网</title>
+<title>股东大会日历</title>
 <style>
   body {{
     font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
@@ -432,12 +434,12 @@ html = f"""<!DOCTYPE html>
 </head>
 <body>
 
-<h1>📅 股东大会日历 · 巨潮资讯网
+<h1>📅 股东大会日历
   <button id="exportXlsx" class="export-btn">📊 导出 Excel</button>
   <button id="exportCsv" class="export-btn secondary">📄 导出 CSV</button>
 </h1>
 <div class="meta">
-  数据源: <b>巨潮资讯网</b> · 数据范围: <b>{ann_date_range}</b> · 会议范围: <b>{meet_date_range}</b> · 共 <b>{total}</b> 场会议
+  数据源: <b>巨潮资讯网</b> · 共 <b>{total}</b> 场会议 · 最近更新: <b>{updated_at}</b>
 </div>
 
 <div class="stats">

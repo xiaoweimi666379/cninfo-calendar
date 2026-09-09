@@ -4,14 +4,11 @@ work/
 __pycache__/
 *.log
 
-# dist/ 由 Actions 重新生成,不入 git
-dist/
+# dist/ 入 git(Actions 直接用,避免 peaceiris 推空目录)
+# dist/
 
 # 编辑器
 .vscode/
 .idea/
 *.swp
 .DS_Store
-
-# 备注:data/cninfo.db **要**入 git(给 Actions 首次跑用)
-# 之前的 *.db 排除已删除

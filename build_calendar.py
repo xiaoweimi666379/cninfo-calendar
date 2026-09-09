@@ -1,14 +1,29 @@
 """新版日历:8/20 起整周 + 9 月,带 Excel/CSV 导出,数据全部从 DB 取"""
-import sqlite3, json, calendar, base64, io
+import os, json, calendar, base64, io, sqlite3
 from datetime import date, timedelta
 from collections import Counter
 
-DB = "/workspace/cninfo_shareholders.db"
-OUT_HTML = "/workspace/calendar_v2.html"
+DB = os.environ.get("DB_PATH", "./data/cninfo.db")
+OUT_HTML = os.environ.get("HTML_OUT", "./dist/index.html")
 
 # 视图范围:8/24(周一)起到 9/30,大约 5 周多
 VIEW_START = date(2026, 8, 24)
 VIEW_END = date(2026, 9, 30)
+
+# 如果 db 不存在,先建一个空表(避免 sqlite3.OperationalError)
+if not os.path.exists(DB):
+    print(f"⚠️ db {DB} 不存在,创建空 schema")
+    db_dir = os.path.dirname(DB)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
+    _con = sqlite3.connect(DB)
+    _con.executescript("""
+    CREATE TABLE IF NOT EXISTS company (sec_code TEXT PRIMARY KEY, sec_name TEXT, full_name TEXT);
+    CREATE TABLE IF NOT EXISTS announcement (id INTEGER PRIMARY KEY AUTOINCREMENT, sec_code TEXT, title TEXT, pdf_url TEXT, publish_date TEXT, source_run TEXT);
+    CREATE TABLE IF NOT EXISTS meeting (id INTEGER PRIMARY KEY AUTOINCREMENT, announcement_id INTEGER, meeting_date TEXT, meeting_time TEXT, weekday INTEGER, weekday_zh TEXT, ampm TEXT, location_raw TEXT, province TEXT, city TEXT, district TEXT, detail TEXT, source_run TEXT);
+    """)
+    _con.commit()
+    _con.close()
 
 con = sqlite3.connect(DB)
 con.row_factory = sqlite3.Row
@@ -545,6 +560,9 @@ document.querySelectorAll('.item').forEach(el => {{
 </html>
 """
 
+out_dir = os.path.dirname(OUT_HTML)
+if out_dir:
+    os.makedirs(out_dir, exist_ok=True)
 with open(OUT_HTML, "w", encoding="utf-8") as f:
     f.write(html)
 print(f"\n已生成: {OUT_HTML} ({len(html)} bytes)")

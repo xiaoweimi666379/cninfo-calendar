@@ -1,29 +1,16 @@
 """新版日历:8/20 起整周 + 9 月,带 Excel/CSV 导出,数据全部从 DB 取"""
-import os, json, calendar, base64, io, sqlite3
+import sqlite3, json, calendar, base64, io
 from datetime import date, timedelta
 from collections import Counter
+
+DB = "/workspace/cninfo_shareholders.db"
+OUT_HTML = "/workspace/calendar_v2.html"
 
 # 视图范围:8/24(周一)起到 9/30,大约 5 周多
 VIEW_START = date(2026, 8, 24)
 VIEW_END = date(2026, 9, 30)
 
-import os
-DB = os.environ.get("DB_PATH", "./data/cninfo.db")
-OUT_HTML = os.environ.get("HTML_OUT", "./dist/index.html")
-# 如果 db 不存在,先建一个空表(避免 sqlite3.OperationalError)
-import sqlite3 as _sq
-if not os.path.exists(DB):
-    print(f"⚠️ db {DB} 不存在,创建空 schema")
-    _con = _sq.connect(DB)
-    _con.executescript("""
-    CREATE TABLE IF NOT EXISTS company (sec_code TEXT PRIMARY KEY, sec_name TEXT, full_name TEXT);
-    CREATE TABLE IF NOT EXISTS announcement (id INTEGER PRIMARY KEY AUTOINCREMENT, sec_code TEXT, title TEXT, pdf_url TEXT, publish_date TEXT, source_run TEXT);
-    CREATE TABLE IF NOT EXISTS meeting (id INTEGER PRIMARY KEY AUTOINCREMENT, announcement_id INTEGER, meeting_date TEXT, meeting_time TEXT, weekday INTEGER, weekday_zh TEXT, ampm TEXT, location_raw TEXT, province TEXT, city TEXT, district TEXT, detail TEXT, source_run TEXT);
-    """)
-    _con.commit()
-    _con.close()
-
-con = _sq.connect(DB)
+con = sqlite3.connect(DB)
 con.row_factory = sqlite3.Row
 cur = con.cursor()
 
@@ -123,13 +110,28 @@ def fmt_day_cell(d, meetings):
     """
 
 
-# 构造 42 天网格(从 VIEW_START 起的 6 周)
+# 构造网格:从第一个有会议的日期所在周的周一开始
+# 如果 VIEW_START 当天或之后 7 天内有会议,用那个;否则用 VIEW_START
+first_meet_date = min(
+    (r["meeting_date"] for r in rows if r.get("meeting_date")),
+    default=VIEW_START.isoformat(),
+)
+first_meet = date.fromisoformat(first_meet_date)
+# 找到 first_meet 所在周的周一
+cal_start = first_meet - timedelta(days=first_meet.weekday())
+# 取到 VIEW_END 所在周的周日
+cal_end = VIEW_END + timedelta(days=(6 - VIEW_END.weekday()))
+# 总天数,向上取整到 7 的倍数
+total_days = (cal_end - cal_start).days + 1
+total_days = ((total_days + 6) // 7) * 7
+
 all_grid = []
-d = VIEW_START
-while len(all_grid) < 42:
+d = cal_start
+for _ in range(total_days):
     all_grid.append(d)
     d += timedelta(days=1)
 days_html = "".join(fmt_day_cell(dd, by_date) for dd in all_grid)
+print(f"  日历范围: {cal_start} ~ {cal_end} ({total_days} 天)")
 
 
 # === 顶部统计 ===
@@ -420,12 +422,6 @@ html = f"""<!DOCTYPE html>
     z-index: 2000;
   }}
   #exportToast.show {{ opacity: 1; }}
-  .aug-section {{
-    max-width: 1500px; background: #fff3e0; border: 1px solid #ffcc80;
-    border-radius: 6px; padding: 12px 16px; margin-bottom: 14px;
-    font-size: 13px;
-  }}
-  .aug-section b {{ color: #e65100; }}
   .month-tag {{
     display: inline-block; padding: 2px 8px; border-radius: 4px;
     font-size: 11px; margin-left: 4px; font-weight: 600;
@@ -446,7 +442,6 @@ html = f"""<!DOCTYPE html>
 
 <div class="stats">
   <div class="stat-card"><div class="v">{total}</div><div class="l">总场次</div></div>
-  <div class="stat-card"><div class="v">{in_aug}</div><div class="l">8 月召开</div></div>
   <div class="stat-card"><div class="v">{in_sep}</div><div class="l">9 月召开</div></div>
   <div class="stat-card"><div class="v">{len(by_date)}</div><div class="l">有会议天数</div></div>
   <div class="stat-card"><div class="v">{single_max}</div><div class="l">单日最多</div></div>
@@ -457,17 +452,16 @@ html = f"""<!DOCTYPE html>
   {"".join(f'<span class="chip">{c}<b>{n}</b></span>' for c, n in top_cities)}
 </div>
 
+{"" if in_aug == 0 else f'''
 <div class="aug-section">
-  <b>📌 8 月召开(共 {in_aug} 场):</b> 会议日期在 8/24~8/31,
-  灰底显示在日历左上方。所有公告均来自 8/20~8/26 这 7 天发布的股东大会会议通知/会议资料。
+  <b>📌 8 月召开(共 {in_aug} 场):</b> 灰底显示在日历左上方。
 </div>
+'''}
 
 <div class="legend">
   <span><span class="dot" style="background:#4caf50;"></span>1-4 家</span>
   <span><span class="dot" style="background:#ff9800;"></span>5-9 家</span>
   <span><span class="dot" style="background:#ff5722;"></span>≥ 10 家</span>
-  <span style="margin-left:24px;color:#999;">浅灰底:8 月</span>
-  <span class="month-tag month-8">8月</span>
   <span class="month-tag month-9">9月</span>
 </div>
 

@@ -37,21 +37,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install pypdf openpyxl
 
-      - name: 下载最新数据库(从上次成功运行的 artifact)
-        uses: actions/download-artifact@v4
-        with:
-          name: cninfo-db
-          path: data/
-        continue-on-error: true   # 首次运行没 artifact,允许失败(用 git 里的 db)
-
-      - name: 确保 db 存在
+      - name: 确保 db 存在(从 git checkout 用,首次 push 已经包含 979 场)
         run: |
           mkdir -p data
-          if [ ! -f data/cninfo.db ]; then
-            echo "::warning::没有 cninfo.db,创建一个空 db"
-            touch data/cninfo.db
-          fi
           ls -la data/
+          if [ ! -f data/cninfo.db ]; then
+            echo "::error::data/cninfo.db 不在仓库里!请 push 时包含 db"
+            exit 1
+          fi
+
+      - name: 备份 db(供可能的回滚)
+        run: cp data/cninfo.db data/cninfo.db.bak || true
 
       - name: 运行每日更新
         env:

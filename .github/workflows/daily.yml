@@ -14,7 +14,10 @@ on:
 
 permissions:
   contents: write   # 需要写权限以 push 数据回仓库
+  pages: write
+  id-token: write
 
+# 两个 job 顺序跑
 jobs:
   update:
     runs-on: ubuntu-latest
@@ -45,8 +48,7 @@ jobs:
         run: |
           mkdir -p data
           if [ ! -f data/cninfo.db ]; then
-            echo "::warning::没有 cninfo.db,从 git checkout 内容建一个空 db"
-            # 触发 daily_update.py 里的 CREATE TABLE IF NOT EXISTS 逻辑
+            echo "::warning::没有 cninfo.db,创建一个空 db"
             touch data/cninfo.db
           fi
           ls -la data/
@@ -59,13 +61,11 @@ jobs:
           EXPIRE_DAYS: "0"
         run: |
           mkdir -p data dist work
-          # 支持手动指定日期
           if [ -n "${{ inputs.date }}" ]; then
             python daily_update.py "${{ inputs.date }}" || true
           else
             python daily_update.py || true
           fi
-          # 即使 update 失败,也要保证 dist/index.html 存在(供 Pages 部署)
           if [ ! -f dist/index.html ] && [ -f data/cninfo.db ]; then
             echo "::warning::update 失败,尝试直接 build_calendar"
             DB_PATH=./data/cninfo.db HTML_OUT=./dist/index.html python build_calendar.py || true
@@ -77,7 +77,6 @@ jobs:
           echo "## 📊 更新摘要" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           ls -la data/ dist/ 2>&1 | head -10 >> $GITHUB_STEP_SUMMARY || true
-          echo "" >> $GITHUB_STEP_SUMMARY
           if [ -f data/cninfo.db ]; then
             python -c "
           import sqlite3
@@ -101,23 +100,13 @@ jobs:
           retention-days: 90
           if-no-files-found: warn
 
-      - name: 上传 HTML(供 Pages 部署)
+      - name: 部署到 GitHub Pages(用 gh-pages 分支)
         if: always()
-        uses: actions/upload-pages-artifact@v3
+        uses: peaceiris/actions-gh-pages@v4
         with:
-          path: dist/
-
-  deploy:
-    needs: update
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: 部署到 GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./dist
+          publish_branch: gh-pages
+          # 如果 gh-pages 分支不存在会自动创建
+          # keep_files: false   # 默认会清空,只保留 dist 内容
+          force_orphan: true

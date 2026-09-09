@@ -13,7 +13,7 @@ on:
         default: ''
 
 permissions:
-  contents: write   # 需要写权限以发布 Release / push Pages
+  contents: write   # 需要写权限以 push 数据回仓库
 
 jobs:
   update:
@@ -34,12 +34,22 @@ jobs:
           python -m pip install --upgrade pip
           pip install pypdf openpyxl
 
-      - name: 下载最新数据库
+      - name: 下载最新数据库(从上次成功运行的 artifact)
         uses: actions/download-artifact@v4
         with:
           name: cninfo-db
           path: data/
-        continue-on-error: true   # 首次运行没 artifact,允许失败
+        continue-on-error: true   # 首次运行没 artifact,允许失败(用 git 里的 db)
+
+      - name: 确保 db 存在
+        run: |
+          mkdir -p data
+          if [ ! -f data/cninfo.db ]; then
+            echo "::warning::没有 cninfo.db,从 git checkout 内容建一个空 db"
+            # 触发 daily_update.py 里的 CREATE TABLE IF NOT EXISTS 逻辑
+            touch data/cninfo.db
+          fi
+          ls -la data/
 
       - name: 运行每日更新
         env:
@@ -51,38 +61,48 @@ jobs:
           mkdir -p data dist work
           # 支持手动指定日期
           if [ -n "${{ inputs.date }}" ]; then
-            # 用户传了日期:用单参模式
             python daily_update.py "${{ inputs.date }}" || true
           else
-            python daily_update.py
+            python daily_update.py || true
+          fi
+          # 即使 update 失败,也要保证 dist/index.html 存在(供 Pages 部署)
+          if [ ! -f dist/index.html ] && [ -f data/cninfo.db ]; then
+            echo "::warning::update 失败,尝试直接 build_calendar"
+            DB_PATH=./data/cninfo.db HTML_OUT=./dist/index.html python build_calendar.py || true
           fi
 
       - name: 显示摘要
+        if: always()
         run: |
           echo "## 📊 更新摘要" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          ls -la data/ dist/ 2>&1 | head -10 >> $GITHUB_STEP_SUMMARY
+          ls -la data/ dist/ 2>&1 | head -10 >> $GITHUB_STEP_SUMMARY || true
           echo "" >> $GITHUB_STEP_SUMMARY
           if [ -f data/cninfo.db ]; then
             python -c "
           import sqlite3
           con = sqlite3.connect('data/cninfo.db')
-          n = con.execute('SELECT COUNT(*) FROM meeting').fetchone()[0]
-          print(f'数据库总会议数: {n}')
-          for r in con.execute('SELECT source_run, COUNT(*) FROM meeting GROUP BY source_run ORDER BY source_run'):
-              print(f'  {r[0]}: {r[1]} 场')
-          " >> $GITHUB_STEP_SUMMARY
+          try:
+              n = con.execute('SELECT COUNT(*) FROM meeting').fetchone()[0]
+              print(f'数据库总会议数: {n}')
+              for r in con.execute('SELECT source_run, COUNT(*) FROM meeting GROUP BY source_run ORDER BY source_run'):
+                  print(f'  {r[0]}: {r[1]} 场')
+          except Exception as e:
+              print(f'查询失败: {e}')
+          " >> $GITHUB_STEP_SUMMARY || true
           fi
 
       - name: 上传数据库(供下次下载)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: cninfo-db
           path: data/cninfo.db
           retention-days: 90
-          if-no-files-found: error
+          if-no-files-found: warn
 
       - name: 上传 HTML(供 Pages 部署)
+        if: always()
         uses: actions/upload-pages-artifact@v3
         with:
           path: dist/

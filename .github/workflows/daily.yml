@@ -54,7 +54,7 @@ jobs:
           DB_PATH: ./data/cninfo.db
           HTML_OUT: ./dist/index.html
           WORK_DIR: ./work
-          EXPIRE_DAYS: "0"
+          EXPIRE_DAYS: "7"
         run: |
           mkdir -p data dist work
           if [ -n "${{ inputs.date }}" ]; then

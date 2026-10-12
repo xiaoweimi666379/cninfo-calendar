@@ -6,9 +6,9 @@ from collections import Counter
 DB = os.environ.get("DB_PATH", "./data/cninfo.db")
 OUT_HTML = os.environ.get("HTML_OUT", "./dist/index.html")
 
-# 视图范围:8/24(周一)起到 9/30,大约 5 周多
-VIEW_START = date(2026, 8, 24)
-VIEW_END = date(2026, 9, 30)
+# 视图范围:从"今天所在周"到数据库里最晚的会议(自动跟随数据,无需改代码)
+VIEW_START = date.today() - timedelta(days=date.today().weekday())   # 本周一
+VIEW_END = date.today() + timedelta(days=45)                          # 至少往后 6 周
 
 # 如果 db 不存在,先建一个空表(避免 sqlite3.OperationalError)
 if not os.path.exists(DB):
@@ -29,7 +29,13 @@ con = sqlite3.connect(DB)
 con.row_factory = sqlite3.Row
 cur = con.cursor()
 
-# 拉视图范围内的所有会议(包含两份 source_run 合并)
+# 视图结束日对齐到库里的最晚会议日(至少 45 天后),保证数据全部展示
+_maxd = cur.execute("SELECT MAX(meeting_date) FROM meeting WHERE meeting_date IS NOT NULL").fetchone()[0]
+if _maxd:
+    VIEW_END = max(VIEW_END, date.fromisoformat(_maxd) + timedelta(days=3))
+print(f"  视图范围: {VIEW_START} ~ {VIEW_END}")
+
+# 拉视图范围内的所有会议(包含多份 source_run 合并)
 cur.execute("""
     SELECT m.meeting_date, m.meeting_time, m.weekday_zh, m.ampm,
            m.location_raw, m.province, m.city, m.district,
@@ -151,8 +157,9 @@ print(f"  日历范围: {cal_start} ~ {cal_end} ({total_days} 天)")
 
 # === 顶部统计 ===
 total = len(rows)
-in_aug = sum(1 for r in rows if r["meeting_date"].startswith("2026-08"))
-in_sep = sum(1 for r in rows if r["meeting_date"].startswith("2026-09"))
+_month_counter = Counter(r["meeting_date"][:7] for r in rows if r.get("meeting_date"))
+_cur_month = date.today().strftime("%Y-%m")
+_cur_month_count = _month_counter.get(_cur_month, 0)
 single_max = max((len(v) for v in by_date.values()), default=0)
 
 # 城市分布(排除未识别)
@@ -459,7 +466,7 @@ html = f"""<!DOCTYPE html>
 
 <div class="stats">
   <div class="stat-card"><div class="v">{total}</div><div class="l">总场次</div></div>
-  <div class="stat-card"><div class="v">{in_sep}</div><div class="l">9 月召开</div></div>
+  <div class="stat-card"><div class="v">{_cur_month_count}</div><div class="l">{_cur_month[:4]} 年 {int(_cur_month[5:])} 月召开</div></div>
   <div class="stat-card"><div class="v">{len(by_date)}</div><div class="l">有会议天数</div></div>
   <div class="stat-card"><div class="v">{single_max}</div><div class="l">单日最多</div></div>
 </div>
@@ -469,9 +476,9 @@ html = f"""<!DOCTYPE html>
   {"".join(f'<span class="chip">{c}<b>{n}</b></span>' for c, n in top_cities)}
 </div>
 
-{"" if in_aug == 0 else f'''
+{"" if not _month_counter else f'''
 <div class="aug-section">
-  <b>📌 8 月召开(共 {in_aug} 场):</b> 灰底显示在日历左上方。
+  <b>📌 月度分布:</b> {" · ".join(f"{k[:4]}-{k[5:]} 共 {v} 场" for k, v in sorted(_month_counter.items()))}
 </div>
 '''}
 
@@ -479,7 +486,6 @@ html = f"""<!DOCTYPE html>
   <span><span class="dot" style="background:#4caf50;"></span>1-4 家</span>
   <span><span class="dot" style="background:#ff9800;"></span>5-9 家</span>
   <span><span class="dot" style="background:#ff5722;"></span>≥ 10 家</span>
-  <span class="month-tag month-9">9月</span>
 </div>
 
 <div class="cal">
@@ -566,4 +572,4 @@ if out_dir:
 with open(OUT_HTML, "w", encoding="utf-8") as f:
     f.write(html)
 print(f"\n已生成: {OUT_HTML} ({len(html)} bytes)")
-print(f"会议: 8月{in_aug} + 9月{in_sep} = 总{total}")
+print(f"会议: 总{total}  当前月({_cur_month}) {_cur_month_count} 场")

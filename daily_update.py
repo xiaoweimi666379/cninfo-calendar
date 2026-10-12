@@ -33,7 +33,7 @@ HTML_OUT = os.environ.get("HTML_OUT", "./dist/index.html")
 WORK_DIR = os.environ.get("WORK_DIR", "./work")
 # 清理策略:删除 meeting_date < 今天的会议(已开过的)
 # 也可设 EXPIRE_DAYS=1 表示"保留今天还在开的"
-EXPIRE_DAYS = int(os.environ.get("EXPIRE_DAYS", "0"))
+EXPIRE_DAYS = int(os.environ.get("EXPIRE_DAYS", "7"))
 
 URL_API = "http://www.cninfo.com.cn/new/hisAnnouncement/query"
 TODAY = date.today()
@@ -43,6 +43,7 @@ os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 os.makedirs(os.path.dirname(HTML_OUT) or ".", exist_ok=True)
 os.makedirs(WORK_DIR, exist_ok=True)
 PDF_DIR = f"{WORK_DIR}/pdfs"
+os.makedirs(PDF_DIR, exist_ok=True)   # ← 关键:PDF 缓存目录必须存在,否则下载全失败
 
 print(f"=== 每日更新 {YESTERDAY} ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')}) ===")
 print(f"  DB:   {DB_PATH}")
@@ -91,8 +92,23 @@ def fetch_list(d_str):
     return all_items
 
 
-DATES = [YESTERDAY.isoformat()]
-SOURCE = YESTERDAY.isoformat()
+# 支持命令行指定日期:
+#   python daily_update.py                     → 抓"昨天"(Actions 默认)
+#   python daily_update.py 2026-10-10          → 抓指定单日
+#   python daily_update.py 2026-09-08 2026-10-11 → 抓一个日期范围
+_cli = os.environ.get("CLI_ARGS", "").split()
+if len(_cli) >= 2:
+    _s = datetime.strptime(_cli[0], "%Y-%m-%d").date()
+    _e = datetime.strptime(_cli[1], "%Y-%m-%d").date()
+    DATES, _d = [], _s
+    while _d <= _e:
+        DATES.append(_d.isoformat())
+        _d += timedelta(days=1)
+elif len(_cli) == 1:
+    DATES = [_cli[0]]
+else:
+    DATES = [YESTERDAY.isoformat()]
+SOURCE = DATES[0] if len(DATES) == 1 else f"{DATES[0]}~{DATES[-1]}"
 
 raw_all = []
 for d in DATES:
@@ -177,6 +193,12 @@ def extract_loc(text):
 
 import pypdf
 
+# 巨潮对高并发很敏感,下载失败率会飙升。用 3 并发 + 指数退避 + 详细日志。
+DOWNLOAD_WORKERS = int(os.environ.get("DL_WORKERS", "3"))
+DOWNLOAD_RETRIES = int(os.environ.get("DL_RETRIES", "4"))
+_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+       "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
 
 def download(item):
     code = item["secCode"]
@@ -185,20 +207,32 @@ def download(item):
     if os.path.exists(path) and os.path.getsize(path) > 1000:
         return item, path, None
     url = "http://static.cninfo.com.cn/" + item["pdf"]
-    for _ in range(2):
+    last_err = "unknown"
+    for attempt in range(DOWNLOAD_RETRIES):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=30) as r:
-                with open(path, "wb") as f: f.write(r.read())
-            return item, path, None
-        except Exception:
-            time.sleep(0.5)
-    return item, None, "下载失败"
+            req = urllib.request.Request(url, headers={
+                "User-Agent": _UA,
+                "Accept": "application/pdf,*/*",
+                "Referer": "http://www.cninfo.com.cn/",
+                "Connection": "close",
+            })
+            with urllib.request.urlopen(req, timeout=45) as r:
+                data = r.read()
+            if len(data) > 1000:
+                with open(path, "wb") as f:
+                    f.write(data)
+                return item, path, None
+            last_err = f"响应过小({len(data)}B)"
+        except Exception as e:
+            last_err = f"{type(e).__name__}: {e}"
+        # 指数退避 1s, 2s, 4s, 8s
+        time.sleep(2 ** attempt)
+    return item, None, last_err
 
 
 results = []
 errs = 0
-with ThreadPoolExecutor(max_workers=8) as ex:
+with ThreadPoolExecutor(max_workers=DOWNLOAD_WORKERS) as ex:
     futs = [ex.submit(download, it) for it in notice_list]
     for i, fut in enumerate(as_completed(futs), 1):
         item, path, err = fut.result()
@@ -210,15 +244,23 @@ with ThreadPoolExecutor(max_workers=8) as ex:
         try:
             r = pypdf.PdfReader(path)
             text = "\n".join(p.extract_text() for p in r.pages)
-        except Exception as e:
+        except Exception:
             text = ""
         results.append({**item, "time": extract_time(text), "loc": extract_loc(text)})
+
 if errs:
     print(f"  [下载失败总数] {errs}/{len(notice_list)}")
 
 print(f"  [解] {len(results)} 条, "
       f"时间 {sum(1 for r in results if r.get('time'))}, "
       f"地点 {sum(1 for r in results if r.get('loc'))}")
+
+# 下载成功率太低时直接退出,不写库、不清理,避免把历史数据清空
+DL_SUCCESS_RATE = 1 - (errs / len(notice_list) if notice_list else 0)
+if notice_list and DL_SUCCESS_RATE < 0.5:
+    print(f"::error::PDF 下载成功率仅 {DL_SUCCESS_RATE:.0%},跳过本次入库与清理")
+    print("::warning::可能是巨潮限流或网络问题,保留现有数据不动")
+    raise SystemExit(2)
 
 
 # === 入库 ===
@@ -304,7 +346,9 @@ CREATE INDEX IF NOT EXISTS idx_meeting_city ON meeting(city);
 """)
 con.commit()
 
-# 清理过期
+# 清理过期会议
+# EXPIRE_DAYS 默认 7:保留最近 7 天已开过的会议,给 PDF 抓取失败留缓冲,
+# 避免某天抓取异常就把历史数据全清空。
 cutoff = (TODAY - timedelta(days=EXPIRE_DAYS)).isoformat()
 cur.execute("DELETE FROM meeting WHERE meeting_date IS NOT NULL AND meeting_date < ?", (cutoff,))
 deleted_m = cur.rowcount
@@ -312,7 +356,7 @@ cur.execute("DELETE FROM announcement WHERE id NOT IN (SELECT DISTINCT announcem
 deleted_a = cur.rowcount
 con.commit()
 after_m = con.execute("SELECT COUNT(*) FROM meeting").fetchone()[0]
-print(f"  [清] 截止 {cutoff}, 删 {deleted_m} 场过期, 删 {deleted_a} 条无关联公告 (剩 {after_m} 场)")
+print(f"  [清] 保留最近 {EXPIRE_DAYS} 天,删 {deleted_m} 场过期,删 {deleted_a} 条无关联公告 (剩 {after_m} 场)")
 
 # 灌本批
 ins_ann = ins_meet = 0
